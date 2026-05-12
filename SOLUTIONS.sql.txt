@@ -1,0 +1,139 @@
+/* 
+   1. TARIFF-BASED CUSTOMER QUERIES
+*/
+
+/*
+Burada spesifik olarak Kobiye Destek tarifesini kullanan müşterileri bulmayı amaçlanmaktadır. 
+Bunun için müşteri tablosu ile tarife tablosu, tarife ID'si üzerinden birleştirilmiştir. 
+Ardından sadece tarife adı istenen şarta uyan kayıtlar filtrelenerek istenen sonuç elde edilmiştir.
+*/
+SELECT c.*
+FROM CUSTOMERS c
+JOIN TARIFFS t ON c.TARIFF_ID = t.TARIFF_ID
+WHERE t.NAME = 'Kobiye Destek';
+
+/* 
+Bu kod bloğu ise Kobiye Destek tarifesine en son kayıt olan müşteriyi tekil olarak bulmak için yazılmıştır. 
+Bir önceki sorguya ek olarak müşterilerin kayıt tarihlerine (SIGNUP_DATE) göre azalan şekilde sıralama yapılmıştır. 
+Son olarak FETCH FIRST 1 ROWS ONLY komutuyla listenin en üstündeki ilk satır çekilerek en yeni müşteri tespit edilmiştir.
+*/
+SELECT c.*
+FROM CUSTOMERS c
+JOIN TARIFFS t ON c.TARIFF_ID = t.TARIFF_ID
+WHERE t.NAME = 'Kobiye Destek'
+ORDER BY c.SIGNUP_DATE DESC
+FETCH FIRST 1 ROWS ONLY;
+
+/* 
+   2. TARIFF DISTRIBUTION
+*/
+
+/*  
+Bu sorguda her bir tarifeyi kaç farklı müşterinin kullandığını görmek için tarife bazlı bir gruplama yapılmıştır 
+Tarife tablosuna bakılarak tüm tarifeler listelenmiş ve GROUP BY ile tarife isimleri tekilleştirilmiştir. 
+Bununla birlikte COUNT fonksiyonu ile her tarifeye denk gelen müşteri ID'leri sayılarak genel dağılım gösterilmiştir.
+*/
+SELECT t.NAME AS TARIFF_NAME, COUNT(c.CUSTOMER_ID) AS CUSTOMER_COUNT
+FROM TARIFFS t
+LEFT JOIN CUSTOMERS c ON t.TARIFF_ID = c.TARIFF_ID
+GROUP BY t.NAME;
+
+/* 
+   3. CUSTOMER SIGNUP ANALYSIS
+*/
+
+/*  
+bu blokta sisteme en erken kayıt olan müşterileri bulmak hedeflenmiştir. 
+İpucunda da belirtildiği gibi en küçük ID'ye sahip olanı bulmak yanıltıcı olabilir bu nedenle doğrudan kayıt tarihine odaklanılmıştır. 
+Subquery ile en eski tarih bulunmuş ve bu tarihe eşit olan tüm müşteriler filtrelenmiştir.
+*/
+SELECT *
+FROM CUSTOMERS
+WHERE SIGNUP_DATE = (SELECT MIN(SIGNUP_DATE) FROM CUSTOMERS);
+
+/* 
+Bu analizde sisteme ilk kayıt olan müşterilerin hangi şehirlerden olduğu incelenmektedir. 
+Bir önceki adımdaki mantık kullanılarak alt sorgu ile sadece en eski kayıt tarihine sahip müşteriler filtrelenmiştir. 
+Sonrasında bu kitle şehir sütununa göre gruplanmış ve her bir şehirde kaç adet öncü müşteri olduğu hesaplanmıştır.
+*/
+SELECT CITY, COUNT(CUSTOMER_ID) AS CUSTOMER_COUNT
+FROM CUSTOMERS
+WHERE SIGNUP_DATE = (SELECT MIN(SIGNUP_DATE) FROM CUSTOMERS)
+GROUP BY CITY;
+
+/* 
+   4. MISSING MONTHLY RECORDS
+*/
+
+/*  
+Burada sistemdeki ana müşteri listesi ile aylık kullanım verileri tablosu arasındaki uyuşmazlık tespit edilmektedir. 
+NOT IN operatörü kullanılarak ana müşteri tablosunda var olup aylık istatistikler tablosunda hiç kaydı bulunmayan müşteriler süzülmüştür. 
+Böylece insertion error nedeniyle fatura detayı eksik olan müşteri ID'leri başarıyla izole edilmiştir.
+*/
+SELECT CUSTOMER_ID
+FROM CUSTOMERS
+WHERE CUSTOMER_ID NOT IN (SELECT CUSTOMER_ID FROM MONTHLY_STATS);
+
+/*  
+Bu sorgu aylık verisi eksik olan müşterilerin şehir bazlı sayısal dağılımını raporlamaktadır. 
+Bir önceki adımda kurgulanan kaydı eksik olan müşteriler filtresi WHERE bloğunda aynen korunmuştur. 
+Son olarak bu sonuç seti şehir sütununa göre gruplanarak veri kaybı probleminin belirli bir şehirde yoğunlaşıp yoğunlaşmadığı gözlemlenmiştir.
+*/
+SELECT CITY, COUNT(CUSTOMER_ID) AS MISSING_CUSTOMER_COUNT
+FROM CUSTOMERS
+WHERE CUSTOMER_ID NOT IN (SELECT CUSTOMER_ID FROM MONTHLY_STATS)
+GROUP BY CITY;
+
+/* 
+   5. USAGE ANALYSIS
+*/
+
+/*  
+Bu analiz sahip olduğu tarife internet limitinin yüzde 75'ini veya daha fazlasını kullanan müşterileri tespit etmek için yazılmıştır. 
+Müşteri, kullanım ve tarife tabloları JOIN işlemleriyle birbiriyle başarılı şekilde eşleştirilmiştir. 
+Sonrasında kullanıcının mevcut verisi tarife limitinin 0.75 ile çarpımından büyük veya eşit mi diye kontrol edilmiştir.
+*/
+SELECT c.CUSTOMER_ID, c.NAME, m.DATA_USAGE, t.DATA_LIMIT
+FROM CUSTOMERS c
+JOIN MONTHLY_STATS m ON c.CUSTOMER_ID = m.CUSTOMER_ID
+JOIN TARIFFS t ON c.TARIFF_ID = t.TARIFF_ID
+WHERE m.DATA_USAGE >= (t.DATA_LIMIT * 0.75);
+
+/* 
+Bu sorgudasahip olduğu tüm paket limitlerini tamamen sıfırlayan müşteriler aranmaktadır. 
+İlgili üç tablo birleştirildikten sonra WHERE bloğunda her bir kullanım tipinin kendi tarife limitine eşit veya büyük olma durumu incelenmiştir. 
+Üç şartın arasına AND operatörü konularak, hepsini aynı anda tüketen istisnai müşteriler hatasız listelenmiştir.
+*/
+SELECT c.CUSTOMER_ID, c.NAME
+FROM CUSTOMERS c
+JOIN MONTHLY_STATS m ON c.CUSTOMER_ID = m.CUSTOMER_ID
+JOIN TARIFFS t ON c.TARIFF_ID = t.TARIFF_ID
+WHERE m.DATA_USAGE >= t.DATA_LIMIT 
+  AND m.MINUTE_USAGE >= t.MINUTE_LIMIT 
+  AND m.SMS_USAGE >= t.SMS_LIMIT;
+
+/* 
+   6. PAYMENT ANALYSIS
+*/
+
+/* 
+Burada dagüncel ayın faturasını ödemeyen müşterileri tespit etmek amacıyla oluşturulmuştur. 
+Müşteri isimlerini çekebilmek için müşteri tablosu ile aylık ödeme durumlarını tutan istatistik tablosu birleştirilmiştir. 
+PAYMENT_STATUS Unpaid olan kayıtlar filtrelenerek borçlu müşterilerin tespiti sağlanmıştır.
+*/
+SELECT c.CUSTOMER_ID, c.NAME, m.PAYMENT_STATUS
+FROM CUSTOMERS c
+JOIN MONTHLY_STATS m ON c.CUSTOMER_ID = m.CUSTOMER_ID
+WHERE UPPER(m.PAYMENT_STATUS) = 'UNPAID';
+
+/*  
+Son olarak burada ödenmiş veya ödenmemiş faturaların tarifelere göre nasıl bir dağılım gösterdiği analiz ediyoruz. 
+Müşteriler tarifeler ve aylık istatistik tabloları bir araya getirildikten sonra tarife adı ve ödeme durumuna göre ikili bir gruplama yapılmıştır. 
+Böylece her bir spesifik tarife için kaç kişinin ödeme yaptığı veya yapmadığı sayısal olarak elde edilmiştir.
+*/
+SELECT t.NAME AS TARIFF_NAME, m.PAYMENT_STATUS, COUNT(c.CUSTOMER_ID) AS TOTAL_COUNT
+FROM CUSTOMERS c
+JOIN MONTHLY_STATS m ON c.CUSTOMER_ID = m.CUSTOMER_ID
+JOIN TARIFFS t ON c.TARIFF_ID = t.TARIFF_ID
+GROUP BY t.NAME, m.PAYMENT_STATUS
+ORDER BY t.NAME, m.PAYMENT_STATUS;
